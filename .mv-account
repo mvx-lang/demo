@@ -2,4 +2,3 @@
 name = demo
 version = 1
 openaccount = 1
-hash = lmdb
