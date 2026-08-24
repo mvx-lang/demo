@@ -1,0 +1,3 @@
+* CLIENT.LIST — every client, with the state they are in spelled out.
+      PRINT "Clients by state"
+      EXECUTE "LIST CLIENTS NAME COMPANY CITY STATE_NAME BY STATE"

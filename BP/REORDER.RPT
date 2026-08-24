@@ -1,0 +1,3 @@
+* REORDER.RPT — what has fallen to or below its reorder level.
+      PRINT "Items to reorder"
+      EXECUTE "LIST INVENTORY PROD_NAME QTY_ON_HAND REORDER_LEVEL WITH QTY_ON_HAND <= REORDER_LEVEL BY PROD_NAME"
