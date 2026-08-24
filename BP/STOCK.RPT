@@ -1,3 +1,3 @@
-* STOCK.RPT — what is on hand, by category.
-      PRINT "Stock on hand"
-      EXECUTE "LIST INVENTORY CATEGORY QTY_ON_HAND BY CATEGORY"
+* STOCK.RPT — what is on hand, by category, with what it is worth.
+      PRINT "Stock on hand and its value"
+      EXECUTE "LIST INVENTORY CATEGORY QTY_ON_HAND STOCK_VALUE BY CATEGORY"
