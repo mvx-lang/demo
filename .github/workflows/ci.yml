@@ -35,37 +35,59 @@ jobs:
     name: mvx
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      LLVM_VERSION: "21"
     steps:
       - uses: actions/checkout@v5
         with: { path: demo }
       - uses: actions/checkout@v5
         with: { repository: mvx-lang/mv_git, ref: develop, path: mv_git }
-      # mkpkg.sh builds and catalogs the package; without it there is no
-      # CATALOG/GIT and the clone fails before a single assertion runs.
+      # mvx from source, not setup-mvx.  That action installs a published
+      # RELEASE, and this account depends on runtime behaviour that is on
+      # develop and not yet in one -- %PH% as the default column list needs
+      # phrase support (mvx#164), so a released toolchain lists @ID and the
+      # suite fails on a change that is correct.  The same reasoning as
+      # building the driver from develop: what is under test is what develop
+      # does now, not what was last shipped.
       - uses: actions/checkout@v5
         with:
           repository: mvx-lang/mvx
-          path: .mvx-src
-          sparse-checkout: scripts
-          sparse-checkout-cone-mode: false
-      - uses: mvx-lang/mvx/.github/actions/setup-mvx@main
-        with: { version: latest }
-      - name: Install libgit2
+          ref: develop
+          path: mvx
+          submodules: true
+      - name: Install the toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgit2-dev pkg-config
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc g++ liblmdb-dev libedit-dev \
+            libgit2-dev pkg-config zlib1g-dev libzstd-dev libncurses-dev \
+            wget lsb-release software-properties-common gnupg ca-certificates
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh "${LLVM_VERSION}"
+          sudo apt-get install -y --no-install-recommends "llvm-${LLVM_VERSION}-dev"
+      - name: Build mvx
+        working-directory: mvx
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="/usr/lib/llvm-${LLVM_VERSION}"
+          cmake --build build
       - name: Build the git package
         working-directory: mv_git
         run: |
           set -euo pipefail
-          MVXBASIC="$(command -v mvx-basic)" \
-            sh "$GITHUB_WORKSPACE/.mvx-src/scripts/mkpkg.sh" .
+          MVX_ROOT="$GITHUB_WORKSPACE/mvx" \
+          MVXBASIC="$GITHUB_WORKSPACE/mvx/build/bin/mvx-basic" \
+          PATH="$GITHUB_WORKSPACE/mvx/build/bin:$PATH" \
+            sh "$GITHUB_WORKSPACE/mvx/scripts/mkpkg.sh" .
           test -x bin/mvx-git
       - name: Run the demo account suite
         run: |
           set -euo pipefail
           PLATFORM=mvx \
-          MVX="$(command -v mvx)" \
+          MVX="$GITHUB_WORKSPACE/mvx/build/bin/mvx" \
+          MVX_DRIVERS="$GITHUB_WORKSPACE/mvx/build/lib" \
           MVXGIT="$GITHUB_WORKSPACE/mv_git/bin/mvx-git" \
           DEMO="$GITHUB_WORKSPACE/demo" \
             sh "$GITHUB_WORKSPACE/demo/tests/demo-tests.sh"
@@ -91,6 +113,11 @@ jobs:
         run: |
           udt-run 'set -eu
             ROOT="$PWD"
+            # The container is root over a checkout owned by the runner user,
+            # so git refuses the local clone: "detected dubious ownership in
+            # repository at /pkg/demo/.git".  actions/checkout marks the path
+            # safe on the HOST; the container has its own global config.
+            git config --global --add safe.directory "*"
             cd "$ROOT/mv_git"
             rm -rf dist; mkdir -p dist
             sh build-udt.sh "$ROOT/mv_git/dist"
@@ -121,6 +148,11 @@ jobs:
         run: |
           uv-run 'set -eu
             ROOT="$PWD"
+            # The container is root over a checkout owned by the runner user,
+            # so git refuses the local clone: "detected dubious ownership in
+            # repository at /pkg/demo/.git".  actions/checkout marks the path
+            # safe on the HOST; the container has its own global config.
+            git config --global --add safe.directory "*"
             cd "$ROOT/mv_git"
             rm -rf dist; mkdir -p dist
             sh build-uv.sh "$ROOT/mv_git/dist"
@@ -147,6 +179,11 @@ jobs:
         run: |
           sh mv_git/.github/jbase-run 'set -eu
             ROOT="$PWD"
+            # The container is root over a checkout owned by the runner user,
+            # so git refuses the local clone: "detected dubious ownership in
+            # repository at /pkg/demo/.git".  actions/checkout marks the path
+            # safe on the HOST; the container has its own global config.
+            git config --global --add safe.directory "*"
             cd "$ROOT/mv_git"
             rm -rf dist; mkdir -p dist
             sh build-jbase.sh "$ROOT/mv_git/dist"
