@@ -107,6 +107,18 @@ t "MD2\$ money"  '$269.00'   "$(V LIST INVENTORY PRICE WITH @ID = 'P100')"
 t "D4/ date"     "2019"      "$(V LIST CLIENTS SINCE WITH @ID = 'C1001')"
 t "MTH time"     "09:24"     "$(V LIST ORDERS ORD_TIME WITH @ID = '1001')"
 
+say "-- the default column list crosses --"
+# The account stores it as %PH%; each platform materialises it under its own
+# name (`@` everywhere but MVX).  A bare LIST is the only way to tell that the
+# crossing worked -- the item can be present and still not be the thing the
+# platform consults (mv_git#204, mvx#164).
+bare="$(V LIST ORDERS WITH @ID = '1001')"
+t "bare LIST uses the phrase"   "Client Name"  "$bare"
+t "and its later columns"       "Qty"          "$bare"
+# ...and it is the phrase doing it, not a coincidence: CLIENT_NO is a column
+# the phrase does NOT name, so it must be absent.
+nt "only the phrase's columns"  "Client No"    "$bare"
+
 say "-- associations: line items line up under their order --"
 li="$(V LIST ORDERS PRODUCT_NO QTY PRICE WITH @ID = '1001')"
 t "first line item"   "P100"     "$li"
