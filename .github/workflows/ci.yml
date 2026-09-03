@@ -1,0 +1,215 @@
+# Runs tests/demo-tests.sh on every platform this account claims to cross.
+#
+# It exists because the suite went stale without anyone noticing: it lived in
+# mvx, nothing there ran it, and a price change made HERE (#1) broke it. A
+# fixture whose test nobody runs stops being a fixture and becomes decoration.
+#
+# The claim under test is that ONE account crosses to four MultiValue systems
+# with its dictionaries intact, so one arm proves nothing on its own -- the
+# interesting failures are the ones that appear on exactly one platform, which
+# is how the missing LINE_ITEMS association and the %PH% naming were both
+# found. Every arm builds the driver from mv_git's develop rather than taking
+# a release: the crossing is part of what is under test, and a released binary
+# would test the release instead of what develop does now.
+#
+# DEMO is always this checkout, never the public URL. Cloning mvx-lang/demo
+# would test whatever is already on develop and pass while the change under
+# review is broken -- which is precisely the failure mode this workflow is for.
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  mvx:
+    name: mvx
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LLVM_VERSION: "21"
+    steps:
+      - uses: actions/checkout@v5
+        with: { path: demo }
+      - uses: actions/checkout@v5
+        with: { repository: mvx-lang/mv_git, ref: develop, path: mv_git }
+      # mvx from source, not setup-mvx.  That action installs a published
+      # RELEASE, and this account depends on runtime behaviour that is on
+      # develop and not yet in one -- %PH% as the default column list needs
+      # phrase support (mvx#164), so a released toolchain lists @ID and the
+      # suite fails on a change that is correct.  The same reasoning as
+      # building the driver from develop: what is under test is what develop
+      # does now, not what was last shipped.
+      - uses: actions/checkout@v5
+        with:
+          repository: mvx-lang/mvx
+          ref: develop
+          path: mvx
+          submodules: true
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc g++ liblmdb-dev libedit-dev \
+            libgit2-dev pkg-config zlib1g-dev libzstd-dev libncurses-dev \
+            wget lsb-release software-properties-common gnupg ca-certificates
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh "${LLVM_VERSION}"
+          sudo apt-get install -y --no-install-recommends "llvm-${LLVM_VERSION}-dev"
+      - name: Build mvx
+        working-directory: mvx
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="/usr/lib/llvm-${LLVM_VERSION}"
+          cmake --build build
+      - name: Build the git package
+        working-directory: mv_git
+        run: |
+          set -euo pipefail
+          MVX_ROOT="$GITHUB_WORKSPACE/mvx" \
+          MVXBASIC="$GITHUB_WORKSPACE/mvx/build/bin/mvx-basic" \
+          PATH="$GITHUB_WORKSPACE/mvx/build/bin:$PATH" \
+            sh "$GITHUB_WORKSPACE/mvx/scripts/mkpkg.sh" .
+          test -x bin/mvx-git
+      - name: Run the demo account suite
+        run: |
+          set -euo pipefail
+          PLATFORM=mvx \
+          MVX="$GITHUB_WORKSPACE/mvx/build/bin/mvx" \
+          MVX_DRIVERS="$GITHUB_WORKSPACE/mvx/build/lib" \
+          MVXGIT="$GITHUB_WORKSPACE/mv_git/bin/mvx-git" \
+          DEMO="$GITHUB_WORKSPACE/demo" \
+            sh "$GITHUB_WORKSPACE/demo/tests/demo-tests.sh"
+
+  # The three licensed platforms share ONE self-hosted runner, so these queue
+  # rather than run together.
+  #
+  # uv and jbase build the CLI only: the suite drives the driver and the
+  # platform's own COUNT and LIST, never the in-session GIT verb, so install.sh
+  # would cost time without covering anything asserted here.  UniData is the
+  # exception and says why at the step itself.
+  udt:
+    name: udt
+    runs-on: [self-hosted, linux, udt]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with: { path: demo }
+      - uses: actions/checkout@v5
+        with: { repository: mvx-lang/mv_git, ref: develop, path: mv_git }
+      - uses: mvx-lang/mv-package-registry/.github/actions/setup-udt@main
+      - name: Build udt-git and run the suite
+        shell: bash
+        # shellcheck disable=SC2016  # expanded inside the container by udt-run
+        run: |
+          udt-run 'set -eu
+            ROOT="$PWD"
+            # The container is root over a checkout owned by the runner user,
+            # so git refuses the local clone: "detected dubious ownership in
+            # repository at /pkg/demo/.git".  actions/checkout marks the path
+            # safe on the HOST; the container has its own global config.
+            git config --global --add safe.directory "*"
+            cd "$ROOT/mv_git"
+            rm -rf dist; mkdir -p dist
+            sh build-udt.sh "$ROOT/mv_git/dist"
+
+            # UniData ALONE needs the install.  Materialising an account there
+            # goes through the globally cataloged GIT and $UDTHOME/lib/mvgit, so
+            # without install.sh the clone reports success and produces an
+            # account whose files are not registered -- every later sentence
+            # then says "Not a filename : ORDERS", which reads as a broken
+            # account rather than a missing install.  uv and jbase materialise
+            # from the CLI alone and stay lean.
+            cd "$ROOT/mv_git/dist/mv_git"
+            ./install.sh 2>&1 | tee "$ROOT/install.log"
+            # install.sh does NOT fail on a BASIC compile error: it leaves the
+            # old object in place and still reports success, so the suite would
+            # quietly test stale code.  Read the log, not the exit status.
+            if grep -qi "compilation failed" "$ROOT/install.log"; then
+              echo "::error::install.sh hit a BASIC compilation failure"
+              exit 1
+            fi
+
+            cd "$ROOT"
+            # A non-interactive shell has no TERM, and without one the verbs
+            # produce EMPTY output -- which reads as a code regression, and
+            # nothing in the failure says "TERM".
+            export TERM=vt100
+            PLATFORM=udt \
+            MVX="$UDTHOME/bin/udt" \
+            MVXGIT=/usr/local/bin/udt-git \
+            DEMO="$ROOT/demo" \
+              sh demo/tests/demo-tests.sh'
+
+  uv:
+    name: uv
+    runs-on: [self-hosted, linux, uv]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with: { path: demo }
+      - uses: actions/checkout@v5
+        with: { repository: mvx-lang/mv_git, ref: develop, path: mv_git }
+      - uses: mvx-lang/mv-package-registry/.github/actions/setup-uv@main
+      - name: Build uv-git and run the suite
+        shell: bash
+        # shellcheck disable=SC2016  # expanded inside the container by uv-run
+        run: |
+          uv-run 'set -eu
+            ROOT="$PWD"
+            # The container is root over a checkout owned by the runner user,
+            # so git refuses the local clone: "detected dubious ownership in
+            # repository at /pkg/demo/.git".  actions/checkout marks the path
+            # safe on the HOST; the container has its own global config.
+            git config --global --add safe.directory "*"
+            cd "$ROOT/mv_git"
+            rm -rf dist; mkdir -p dist
+            sh build-uv.sh "$ROOT/mv_git/dist"
+            cd "$ROOT"
+            export TERM=vt100
+            PLATFORM=uv \
+            MVX="${UVHOME:-/usr/uv}/bin/uv" \
+            MVXGIT="$ROOT/mv_git/dist/mv_git/bin/uv-git" \
+            DEMO="$ROOT/demo" \
+              sh demo/tests/demo-tests.sh'
+
+  jbase:
+    name: jbase
+    runs-on: [self-hosted, linux, jbase]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with: { path: demo }
+      - uses: actions/checkout@v5
+        with: { repository: mvx-lang/mv_git, ref: develop, path: mv_git }
+      - name: Build jb-git and run the suite
+        shell: bash
+        # shellcheck disable=SC2016  # expanded inside the container by jbase-run
+        run: |
+          sh mv_git/.github/jbase-run 'set -eu
+            ROOT="$PWD"
+            # The container is root over a checkout owned by the runner user,
+            # so git refuses the local clone: "detected dubious ownership in
+            # repository at /pkg/demo/.git".  actions/checkout marks the path
+            # safe on the HOST; the container has its own global config.
+            git config --global --add safe.directory "*"
+            cd "$ROOT/mv_git"
+            rm -rf dist; mkdir -p dist
+            sh build-jbase.sh "$ROOT/mv_git/dist"
+            cd "$ROOT"
+            PLATFORM=jbase \
+            MVX=jsh \
+            MVXGIT="$ROOT/mv_git/dist/mv_git/jb-git" \
+            DEMO="$ROOT/demo" \
+              sh demo/tests/demo-tests.sh'
