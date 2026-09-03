@@ -93,10 +93,12 @@ jobs:
             sh "$GITHUB_WORKSPACE/demo/tests/demo-tests.sh"
 
   # The three licensed platforms share ONE self-hosted runner, so these queue
-  # rather than run together. Only the CLI is built: demo-tests drives the
-  # driver and the platform's own verbs (COUNT, LIST), never the in-session GIT
-  # verb, so install.sh -- which catalogs into the installation itself -- would
-  # cost time and risk without covering anything this suite asserts.
+  # rather than run together.
+  #
+  # uv and jbase build the CLI only: the suite drives the driver and the
+  # platform's own COUNT and LIST, never the in-session GIT verb, so install.sh
+  # would cost time without covering anything asserted here.  UniData is the
+  # exception and says why at the step itself.
   udt:
     name: udt
     runs-on: [self-hosted, linux, udt]
@@ -121,6 +123,24 @@ jobs:
             cd "$ROOT/mv_git"
             rm -rf dist; mkdir -p dist
             sh build-udt.sh "$ROOT/mv_git/dist"
+
+            # UniData ALONE needs the install.  Materialising an account there
+            # goes through the globally cataloged GIT and $UDTHOME/lib/mvgit, so
+            # without install.sh the clone reports success and produces an
+            # account whose files are not registered -- every later sentence
+            # then says "Not a filename : ORDERS", which reads as a broken
+            # account rather than a missing install.  uv and jbase materialise
+            # from the CLI alone and stay lean.
+            cd "$ROOT/mv_git/dist/mv_git"
+            ./install.sh 2>&1 | tee "$ROOT/install.log"
+            # install.sh does NOT fail on a BASIC compile error: it leaves the
+            # old object in place and still reports success, so the suite would
+            # quietly test stale code.  Read the log, not the exit status.
+            if grep -qi "compilation failed" "$ROOT/install.log"; then
+              echo "::error::install.sh hit a BASIC compilation failure"
+              exit 1
+            fi
+
             cd "$ROOT"
             # A non-interactive shell has no TERM, and without one the verbs
             # produce EMPTY output -- which reads as a code regression, and
@@ -128,7 +148,7 @@ jobs:
             export TERM=vt100
             PLATFORM=udt \
             MVX="$UDTHOME/bin/udt" \
-            MVXGIT="$ROOT/mv_git/dist/mv_git/udt-git" \
+            MVXGIT=/usr/local/bin/udt-git \
             DEMO="$ROOT/demo" \
               sh demo/tests/demo-tests.sh'
 
